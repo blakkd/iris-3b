@@ -1,0 +1,43 @@
+# Iris-3B Turbo, stage 2 (the released model): a 4-step TDM student
+# warm-started from stage 1.
+#
+#   torchrun --nproc_per_node=2 scripts/distill.py --config configs/iris3b/turbo_stage2_4step.yaml \
+#       prompts_file=/data/prompts.txt
+#   python scripts/export_distilled.py output/turbo/stage2_4step/checkpoints/step_00000500.pth \
+#       exported/iris-3b-turbo --dtype bf16
+#
+# init_from is the stage-1 training checkpoint, not an export: the student
+# starts from its EMA weights (init_weights: ema) and the fake network from the
+# stage-1 fake network, with fresh optimizers, counters and prompt order. The
+# teacher stays Iris-3B. Global batch 16 = batch_size 8 per GPU x 2 GPUs.
+# Iris-3B Turbo is the EMA after 500 student updates, exported in bf16 as above.
+teacher: iris-3b
+# UTF-8, one prompt per line; the release cycled ~1.19M prompts: 32% MONET
+# captions, 28% captions of text-rendering sources, 40% other SFT captions
+prompts_file: /path/to/prompts.txt
+work_dir: output/turbo/stage2_4step
+init_from: output/turbo/stage1_6step/checkpoints/step_00001600.pth
+init_weights: ema
+seed: 76
+
+batch_size: 8    # per GPU
+height: 1024
+width: 1024
+resolutions: [[1024, 1024], [752, 1344], [896, 1344], [896, 1200], [1200, 896], [1344, 896], [1344, 752]]
+max_steps: 500
+fake_updates: 1
+learning_rate: 2.5e-7
+fake_learning_rate: 2.5e-6
+betas: [0.0, 0.999]
+weight_decay: 0.0
+max_grad_norm: 1.0
+ema_decay: 0.9995
+activation_checkpointing: full
+strategy: ddp
+save_every: 100
+log_every: 10
+
+dmd:
+  sigmas: [1.0, 0.938, 0.833, 0.625]
+  cfg_scale: 3.5
+  sigma_min: 0.01

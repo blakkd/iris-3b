@@ -238,31 +238,51 @@ rendered text and on OneIG-Bench, where the gap is mostly text and diversity.
 
 Turbo is distilled from Iris-3B with
 [Trajectory Distribution Matching](https://arxiv.org/abs/2503.06674) (TDM),
-data-free, as a full fine-tune of all 3B parameters in two stages.
+data-free, as a full fine-tune of all 3B parameters in two stages. The trainer
+is included: `scripts/distill.py` with one config per stage.
 
 | | Stage 1 | Stage 2 (released) |
 |---|---|---|
+| Config | `configs/iris3b/turbo_stage1_6step.yaml` | `configs/iris3b/turbo_stage2_4step.yaml` |
 | Steps (σ) | 6 (1, 0.926, 0.833, 0.714, 0.556, 0.333) | 4 (1, 0.938, 0.833, 0.625) |
-| Initialization | Iris-3B | stage-1 EMA |
+| Initialization | Iris-3B | student: stage-1 EMA; fake network: stage 1 |
 | Student updates | 1,600 | 500 |
-| Student LR | 1e-6, halved late in training | 2.5e-7 |
+| Global batch | 64 | 16 |
+| Student / fake-network LR | 1e-6 / 5e-6 | 2.5e-7 / 2.5e-6 |
 | EMA decay | 0.999 | 0.9995 |
+| Prompts | ~981K | ~1.19M |
 
 - **Networks**: frozen Iris-3B teacher, the student and a "fake" score network
-  trained online on the student's outputs, all initialized from Iris-3B;
-  deterministic flow-Euler step transitions.
+  trained online on the student's outputs; deterministic flow-Euler step
+  transitions.
 - **Guidance**: CFG 3.5 (empty negative prompt) baked into the teacher target;
   the student samples without CFG.
 - **Optimizer**: AdamW, betas (0, 0.999), weight decay 0, gradient clipping 1.0,
-  global batch 64; fake-network LR 5e-6 in stage 1 (halved with the student
-  LR), one fake update per student update.
+  constant LR, one fake update per student update.
 - **Precision**: FP32 weights under BF16 autocast.
-- **Resolution**: about 1 MP in 7 aspect buckets: 1024×1024, 752×1344,
-  896×1344, 896×1200 and their transposes.
-- **Prompts**: about 981K text prompts, no images: fine-grained text-to-image
-  prompts, MONET captions, rendered-text prompts and SFT captions; about 12%
-  contain quoted text.
-- **Release**: the stage-2 EMA weights.
+- **Resolution**: about 1 MP in 7 aspect buckets, one per global batch:
+  1024×1024, 752×1344, 896×1344, 896×1200 and their transposes.
+- **Prompts**: text only, no images. Stage 1: fine-grained text-to-image
+  prompts, MONET captions, rendered-text prompts and SFT captions, about 12%
+  with quoted text. Stage 2: MONET captions, captions of text-rendering sources
+  and other SFT captions. The prompt sets are not released.
+- **Release**: the stage-2 EMA weights, exported in bf16.
+
+```bash
+torchrun --nproc_per_node=8 scripts/distill.py --config configs/iris3b/turbo_stage1_6step.yaml \
+    teacher=iris-3b prompts_file=prompts.txt
+torchrun --nproc_per_node=2 scripts/distill.py --config configs/iris3b/turbo_stage2_4step.yaml \
+    teacher=iris-3b prompts_file=prompts.txt \
+    init_from=output/turbo/stage1_6step/checkpoints/step_00001600.pth
+python scripts/export_distilled.py output/turbo/stage2_4step/checkpoints/step_00000500.pth \
+    exported/iris-3b-turbo --dtype bf16
+```
+
+`teacher` is the exported Iris-3B directory from [Inference](#inference) and
+`prompts_file` a UTF-8 text file with one prompt per line. Interrupted runs
+continue with `resume_from=<work_dir>/checkpoints/latest.pth`;
+`strategy=fsdp2` shards the student, the fake network and their optimizer
+states across GPUs when DDP does not fit.
 
 ### Thanks to the community turbo LoRA
 

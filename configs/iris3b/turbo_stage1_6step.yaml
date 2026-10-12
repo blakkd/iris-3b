@@ -1,0 +1,40 @@
+# Iris-3B Turbo, stage 1: a 6-step TDM student distilled from Iris-3B.
+#
+#   hf download speridlabs/iris-3b --exclude "depth/*" "upscaler/*" "turbo/*" --local-dir iris-3b
+#   torchrun --nproc_per_node=8 scripts/distill.py --config configs/iris3b/turbo_stage1_6step.yaml \
+#       prompts_file=/data/prompts.txt
+#
+# Global batch 64 = batch_size 8 per GPU x 8 GPUs.
+# Learning rates are constant. The released run used the checkpoint after
+# 1,600 student updates, which initializes stage 2 (turbo_stage2_4step.yaml).
+# Every checkpoint is about 84 GB: FP32 student, EMA, fake network and both
+# AdamW states.
+teacher: iris-3b    # exported directory or training .pth; it also initializes student and fake
+prompts_file: /path/to/prompts.txt    # UTF-8, one prompt per line; the release cycled ~981K prompts
+work_dir: output/turbo/stage1_6step
+seed: 62
+
+batch_size: 8    # per GPU
+height: 1024
+width: 1024
+# [height, width] buckets of about one megapixel; every global batch draws one
+resolutions: [[1024, 1024], [752, 1344], [896, 1344], [896, 1200], [1200, 896], [1344, 896], [1344, 752]]
+max_steps: 1600    # student updates
+fake_updates: 1    # fake-network updates per student update
+learning_rate: 1.0e-6
+fake_learning_rate: 5.0e-6
+betas: [0.0, 0.999]
+weight_decay: 0.0
+max_grad_norm: 1.0
+ema_decay: 0.999
+activation_checkpointing: full
+# ddp needs about 160 GB per GPU at batch 8; fsdp2 shards student, fake and
+# their optimizer states over the GPUs instead
+strategy: ddp
+save_every: 100
+log_every: 10
+
+dmd:
+  sigmas: [1.0, 0.926, 0.833, 0.714, 0.556, 0.333]
+  cfg_scale: 3.5
+  sigma_min: 0.01
