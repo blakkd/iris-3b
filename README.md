@@ -236,6 +236,8 @@ rendered text and on OneIG-Bench, where the gap is mostly text and diversity.
 
 ### Training recipe
 
+<div align="center"><img src="assets/tdm-diagram.svg" width="820" alt="TDM distillation: the student denoises in few steps; at each step its output is re-noised and scored by the frozen teacher and an online fake network"></div>
+
 Turbo is distilled from Iris-3B with
 [Trajectory Distribution Matching](https://arxiv.org/abs/2503.06674) (TDM),
 data-free, as a full fine-tune of all 3B parameters in two stages. The trainer
