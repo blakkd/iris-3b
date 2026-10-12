@@ -3,12 +3,15 @@
 Usage:
     python scripts/sample.py --checkpoint exported/iris-3b --prompt "a red fox" --prompt "a blue jay"
     python scripts/sample.py --checkpoint output/run/checkpoints/latest.pth --txt-file prompts.txt
+    python scripts/sample.py --checkpoint iris-3b/turbo --prompt "a red fox"
 
 ``--checkpoint`` is either a directory written by ``scripts/export_checkpoint.py``
 (``model.safetensors`` + ``config.yaml``) or a training ``.pth``, whose EMA
-weights and embedded config are used. Prompts come from repeated --prompt flags
-or a text file (one per line). Images are written as jpgs named after the
-prompt plus a grid.png contact sheet.
+weights and embedded config are used. A directory that also holds
+``distill.yaml`` (Iris-3B Turbo) is sampled with the few-step schedule saved
+there and no CFG. Prompts come from repeated --prompt flags or a text file
+(one per line). Images are written as jpgs named after the prompt plus a
+grid.png contact sheet.
 """
 
 import argparse
@@ -19,11 +22,12 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 import torch
+from omegaconf import OmegaConf
 
 from iris3b.config import Config, inference_config
 from iris3b.models.dit import IrisDiT
 from iris3b.registry import TEXT_ENCODERS
-from iris3b.sampling import generate, load_for_inference
+from iris3b.sampling import generate, generate_few_step, load_for_inference
 
 
 def slugify(text: str, max_len: int = 60) -> str:
@@ -62,6 +66,16 @@ def main(argv: list[str] | None = None) -> None:
 
     raw, weights = load_for_inference(args.checkpoint)
     cfg = inference_config(raw, args.set)
+    # a distilled (Turbo) export fixes its own schedule and has guidance baked in
+    distill = Path(args.checkpoint, "distill.yaml")
+    sigmas = list(OmegaConf.load(distill).dmd.sigmas) if distill.is_file() else None
+    if sigmas and any(
+        v is not None for v in (args.steps, args.order, args.cfg_scale, args.negative_prompt, args.shift)
+    ):
+        parser.error(
+            "a Turbo checkpoint samples with the fixed schedule in its distill.yaml and no CFG; "
+            "drop --steps/--order/--cfg-scale/--negative-prompt/--shift"
+        )
     steps = args.steps if args.steps is not None else cfg.sample.steps
     order = args.order if args.order is not None else cfg.sample.order
     cfg_scale = args.cfg_scale if args.cfg_scale is not None else cfg.sample.cfg_scale
@@ -85,23 +99,37 @@ def main(argv: list[str] | None = None) -> None:
 
     generator = torch.Generator(device=device).manual_seed(args.seed)
     with torch.autocast(device.type, dtype=torch.bfloat16, enabled=device.type == "cuda"):
-        images = generate(
-            model,
-            text_encoder,
-            prompts,
-            height=args.height,
-            width=args.width,
-            steps=steps,
-            order=order,
-            cfg_scale=cfg_scale,
-            cfg_interval=tuple(cfg.sample.cfg_interval),
-            shift=shift,
-            negative_prompt=negative,
-            generator=generator,
-            device=device,
-            num_train_timesteps=cfg.flow.num_train_timesteps,
-            prediction=cfg.flow.prediction,
-        )
+        if sigmas:
+            images = generate_few_step(
+                model,
+                text_encoder,
+                prompts,
+                height=args.height,
+                width=args.width,
+                sigmas=sigmas,
+                generator=generator,
+                device=device,
+                num_train_timesteps=cfg.flow.num_train_timesteps,
+                prediction=cfg.flow.prediction,
+            )
+        else:
+            images = generate(
+                model,
+                text_encoder,
+                prompts,
+                height=args.height,
+                width=args.width,
+                steps=steps,
+                order=order,
+                cfg_scale=cfg_scale,
+                cfg_interval=tuple(cfg.sample.cfg_interval),
+                shift=shift,
+                negative_prompt=negative,
+                generator=generator,
+                device=device,
+                num_train_timesteps=cfg.flow.num_train_timesteps,
+                prediction=cfg.flow.prediction,
+            )
 
     from torchvision.utils import save_image
 

@@ -91,3 +91,45 @@ def generate(
     )
     sample = solver.sample(z, cond, uncond, steps=steps, order=order, shift=shift)
     return sample.clamp(-1, 1)
+
+
+@torch.no_grad()
+def generate_few_step(
+    model: IrisDiT,
+    text_encoder: TextEncoder,
+    prompts: list[str],
+    height: int,
+    width: int,
+    sigmas: list[float],
+    generator: torch.Generator | None = None,
+    device: torch.device | str = "cuda",
+    noise: torch.Tensor | None = None,
+    num_train_timesteps: int = 1000,
+    prediction: str = "v",
+) -> torch.Tensor:
+    """Sample a few-step distilled model (Iris-3B Turbo), clamped to [-1, 1].
+
+    One model call per noise level in ``sigmas`` (the descending schedule from
+    1 saved in the checkpoint's ``distill.yaml``) and no CFG: guidance is
+    distilled into the weights. Between calls the clean prediction moves to the
+    next noise level along the flow, reusing the noise implied by the current
+    state, so the image is fully determined by the initial noise.
+    """
+    model_dtype = next(model.parameters()).dtype
+    encoding = text_encoder.encode(prompts)
+    cond = encoding.embeddings.to(device=device, dtype=model_dtype)
+    mask = encoding.mask.to(device=device)
+    if noise is None:
+        noise = torch.randn(
+            len(prompts), model.cfg.in_channels, height, width, generator=generator, device=device
+        )
+    x = noise.to(device=device, dtype=torch.float32)
+    sigma = torch.full((x.shape[0], 1, 1, 1), sigmas[0], device=x.device, dtype=torch.float32)
+    for i in range(len(sigmas)):
+        out = model(x.to(model_dtype), sigma.flatten() * num_train_timesteps, cond, y_mask=mask).x.float()
+        clean = out if prediction == "x" else x - sigma * out
+        if i + 1 < len(sigmas):
+            implied_noise = (x - (1 - sigma) * clean) / sigma
+            sigma = torch.full_like(sigma, sigmas[i + 1])
+            x = (1 - sigma) * clean + sigma * implied_noise
+    return clean.clamp(-1, 1)
