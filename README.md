@@ -13,12 +13,16 @@ generator: the same pixel-space prior, fine-tuned, estimates monocular depth and
 restores and upscales images — one backbone, three tasks. This repository contains the
 model, the training and fine-tuning code, and inference.
 
+[Iris-3B Turbo](#iris-3b-turbo) is a 4-step distilled version of Iris-3B: a
+1024×1024 image in about 0.7 s on one H100.
+
 <div align="center">
 
 [![arXiv](https://img.shields.io/badge/arXiv-2610.09450-b31b1b)](https://arxiv.org/abs/2610.09450)
 [![Project Page](https://img.shields.io/badge/Project_Page-1f6feb)](https://speridlabs.com/research/iris)
 [![Hugging Face](https://img.shields.io/badge/%F0%9F%A4%97%20Hugging%20Face-Model-yellow)](https://huggingface.co/speridlabs/iris-3b)
 [![Hugging Face Spaces](https://img.shields.io/badge/%F0%9F%A4%97%20Hugging%20Face-Spaces-yellow)](https://huggingface.co/spaces/speridlabs/iris-3b)
+[![Turbo demo](https://img.shields.io/badge/%F0%9F%A4%97%20Hugging%20Face-Turbo%20Demo-yellow)](https://huggingface.co/spaces/speridlabs/iris-3b-turbo)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
 
@@ -119,7 +123,7 @@ pip install -e ".[dev]"     # + pytest, ruff
 ## Inference
 
 ```bash
-hf download speridlabs/iris-3b --local-dir iris-3b    # ~12 GB
+hf download speridlabs/iris-3b --local-dir iris-3b --exclude "depth/*" "upscaler/*" "turbo/*"    # ~12 GB
 python scripts/sample.py --checkpoint iris-3b \
     --prompt "a red fox sleeping in fresh snow, golden hour"
 ```
@@ -177,6 +181,108 @@ needs to the GPU (~20 GB peak), which is what the Space does:
 pip install -e ".[ui]"
 python demo/app.py          # IRIS_MODEL_REPO=<dir or repo id> to use other weights
 ```
+
+## Iris-3B Turbo
+
+<div align="center"><img src="assets/turbo.webp" width="512" alt="Iris-3B Turbo sample: a shiba inu in aviator sunglasses driving a supercar under the words IRIS TURBO"></div>
+
+Iris-3B Turbo is a 4-step distilled version of Iris-3B. Classifier-free
+guidance is baked into the weights, so each step is a single forward pass; a
+1024×1024 image takes about 0.7 s on one H100 (batch 4). It is a full
+fine-tune of all 3B parameters, not a LoRA, and ships in the
+[`turbo/`](https://huggingface.co/speridlabs/iris-3b/tree/main/turbo) folder of
+the Hugging Face repo (~6 GB, bf16). Try it in the
+[Turbo demo](https://huggingface.co/spaces/speridlabs/iris-3b-turbo).
+
+```bash
+hf download speridlabs/iris-3b --include "turbo/*" --local-dir iris-3b    # ~6 GB
+python scripts/sample.py --checkpoint iris-3b/turbo \
+    --prompt "a red fox sleeping in fresh snow, golden hour"
+```
+
+`scripts/sample.py` recognises the folder by its `distill.yaml` and samples
+with the schedule saved there: σ = 1, 0.938, 0.833, 0.625, deterministic
+flow-Euler steps that reuse the noise implied by the current state, and no CFG.
+The schedule is part of the model, so `--steps`, `--order`, `--shift`,
+`--cfg-scale` and `--negative-prompt` do not apply; the prompt, `--height`,
+`--width` and `--seed` do. Weights are upcast to FP32 and run under BF16
+autocast, as in the evaluation below. Python API:
+`iris3b.sampling.generate_few_step`. Turbo was distilled at about one megapixel
+in 7 aspect buckets: 1024×1024, 752×1344, 896×1344, 896×1200 and their
+transposes. The image above was generated on an H100 with `--seed 6` and the
+prompt *Colorful animated cartoon poster: a smiling shiba inu in aviator
+sunglasses behind the wheel of a low futuristic supercar, dynamic angle, neon
+sunset sky, with big bold vector lettering "IRIS TURBO" in the sky*.
+
+### Benchmarks
+
+| Model | GenEval | DPG-Bench | LongText-Bench (EN) | OneIG-Bench (EN) |
+|---|---|---|---|---|
+| Iris-3B | 0.798 | 86.52 | 0.857 | 0.540 |
+| Iris-3B Turbo | 0.820 | 86.68 | 0.804 | 0.516 |
+| [iris-3b-turbo-lora](https://huggingface.co/pentacoxian-dev/iris-3b-turbo-lora) r2-1000 | 0.760 | 85.05 | 0.733 | 0.486 |
+
+| OneIG-Bench (EN) | Alignment | Text | Reasoning | Style | Diversity |
+|---|---|---|---|---|---|
+| Iris-3B | 0.863 | 0.889 | 0.279 | 0.449 | 0.220 |
+| Iris-3B Turbo | 0.862 | 0.848 | 0.283 | 0.433 | 0.154 |
+| iris-3b-turbo-lora r2-1000 | 0.851 | 0.721 | 0.258 | 0.445 | 0.153 |
+
+All models at 1024×1024 with the official scorers and the same prompts and
+seeds; Iris-3B with its default sampling settings. The community adapter was run
+with its recommended settings through its own code. Turbo is slightly ahead of
+the base model on prompt following (GenEval, DPG-Bench) and behind it on long
+rendered text and on OneIG-Bench, where the gap is mostly text and diversity.
+
+### Training recipe
+
+Turbo is distilled from Iris-3B with
+[Trajectory Distribution Matching](https://arxiv.org/abs/2503.06674) (TDM),
+data-free, as a full fine-tune of all 3B parameters in two stages.
+
+| | Stage 1 | Stage 2 (released) |
+|---|---|---|
+| Steps (σ) | 6 (1, 0.926, 0.833, 0.714, 0.556, 0.333) | 4 (1, 0.938, 0.833, 0.625) |
+| Initialization | Iris-3B | stage-1 EMA |
+| Student updates | 1,600 | 500 |
+| Student LR | 1e-6, halved late in training | 2.5e-7 |
+| EMA decay | 0.999 | 0.9995 |
+
+- **Networks**: frozen Iris-3B teacher, the student and a "fake" score network
+  trained online on the student's outputs, all initialized from Iris-3B;
+  deterministic flow-Euler step transitions.
+- **Guidance**: CFG 3.5 (empty negative prompt) baked into the teacher target;
+  the student samples without CFG.
+- **Optimizer**: AdamW, betas (0, 0.999), weight decay 0, gradient clipping 1.0,
+  global batch 64; fake-network LR 5e-6 in stage 1 (halved with the student
+  LR), one fake update per student update.
+- **Precision**: FP32 weights under BF16 autocast.
+- **Resolution**: about 1 MP in 7 aspect buckets: 1024×1024, 752×1344,
+  896×1344, 896×1200 and their transposes.
+- **Prompts**: about 981K text prompts, no images: fine-grained text-to-image
+  prompts, MONET captions, rendered-text prompts and SFT captions; about 12%
+  contain quoted text.
+- **Release**: the stage-2 EMA weights.
+
+### Thanks to the community turbo LoRA
+
+The first few-step Iris came from the community:
+[pentacoxian-dev](https://huggingface.co/pentacoxian-dev) built
+[iris-3b-turbo-lora](https://huggingface.co/pentacoxian-dev/iris-3b-turbo-lora)
+([code](https://github.com/pentaCoxian/iris-3b-turbo),
+[demo](https://huggingface.co/spaces/pentacoxian-dev/iris-3b-turbo)), a 4-step
+DMD2 distillation packaged as a rank-64 LoRA. It is a lightweight 460 MB adapter
+trained on a single consumer GPU, far easier to download, share and build on
+than a full 6 GB checkpoint. Thank you, it is a joy to see Iris picked up by
+the community this quickly.
+
+### Limitations
+
+- Dense or long rendered text is less reliable than with the base model.
+- Less variety across seeds: different seeds for one prompt give more similar
+  images.
+- Faint grain or speckle can appear on flat, vector-style backgrounds.
+- Sampling is fixed at 4 steps, with no CFG or negative prompt.
 
 ## Training
 
@@ -246,8 +352,9 @@ implementation; it contains no code from that project. We also build on
 [REPA](https://arxiv.org/abs/2410.06940),
 [Muon](https://kellerjordan.github.io/posts/muon/) through
 [Dion](https://github.com/microsoft/dion),
-[Qwen3-VL](https://github.com/QwenLM/Qwen3-VL) and
-[DINOv2](https://github.com/facebookresearch/dinov2).
+[Qwen3-VL](https://github.com/QwenLM/Qwen3-VL),
+[DINOv2](https://github.com/facebookresearch/dinov2) and, for Iris-3B Turbo,
+[TDM](https://arxiv.org/abs/2503.06674).
 
 ## License
 
