@@ -44,7 +44,9 @@ DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 # only the one a request needs is moved to the GPU for that call.
 HOME = torch.device("cpu") if ZERO_GPU or os.environ.get("IRIS_OFFLOAD") == "1" else DEVICE
 
-source = MODEL_REPO if os.path.isdir(MODEL_REPO) else snapshot_download(MODEL_REPO, token=os.environ.get("HF_TOKEN"))
+source = MODEL_REPO if os.path.isdir(MODEL_REPO) else snapshot_download(
+    MODEL_REPO, token=os.environ.get("HF_TOKEN"), ignore_patterns=["turbo/*"]  # Turbo has its own Space
+)
 raw, weights = load_for_inference(source)
 cfg = inference_config(raw, [])
 with torch.device("meta"):
