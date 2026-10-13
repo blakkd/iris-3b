@@ -110,13 +110,16 @@ def pick(evt: gr.SelectData):
 
 
 def depth_view(image, depth, note):
-    return (slider_html(image, colorize(depth), "Photo", "Depth"), cloud_html(depth, image),
+    return (slider_html(image, colorize(depth), "Photo", "Depth",
+                        download=f"iris-depth-{image.width}x{image.height}.webp"),
+            cloud_html(depth, image),
             f'<div class="sl-meta"><span>{note}</span><span>{image.width}×{image.height} · near = bright · '
             "drag the cloud to orbit, scroll to zoom</span></div>")
 
 
 def upscale_view(small, result, note):
-    return (slider_html(small, result, "Input", "Iris-3B"),
+    return (slider_html(small, result, "Input", "Iris-3B",
+                        download=f"iris-upscale-{result.width}x{result.height}.webp"),
             f'<div class="sl-meta"><span>Restored</span><span>{note}</span></div>')
 
 
