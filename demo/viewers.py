@@ -21,13 +21,25 @@ def _data_uri(image: Image.Image, quality: int = 92) -> str:
     return "data:image/webp;base64," + base64.b64encode(buf.getvalue()).decode()
 
 
-def slider_html(before: Image.Image, after: Image.Image, before_label: str, after_label: str) -> str:
+def slider_html(before: Image.Image, after: Image.Image, before_label: str, after_label: str,
+                download: str | None = None) -> str:
+    """``download`` (a file name) adds a button in the top-right corner that saves
+    the *after* image, the same affordance the Generate tab's gr.Image has."""
     before = before.convert("RGB").resize(after.size, Image.Resampling.BICUBIC)
+    button = ""
+    if download:
+        button = (
+            f'<button class="iris-ba-dl" type="button" data-download="{download}" '
+            f'title="Download {after_label} image" aria-label="Download {after_label} image">'
+            '<svg width="100%" height="100%" viewBox="0 0 32 32" aria-hidden="true">'
+            '<path fill="currentColor" d="M26 24v4H6v-4H4v4a2 2 0 0 0 2 2h20a2 2 0 0 0 2-2v-4z'
+            'm0-10l-1.41-1.41L17 20.17V2h-2v18.17l-7.59-7.58L6 14l10 10l10-10z"/></svg></button>'
+        )
     return (
         f'<div class="iris-ba" style="aspect-ratio:{after.width}/{after.height}">'
         f'<img class="iris-ba-after" src="{_data_uri(after)}" alt="{after_label}" draggable="false">'
         f'<img class="iris-ba-before" src="{_data_uri(before)}" alt="{before_label}" draggable="false">'
-        '<div class="iris-ba-line"><span>↔</span></div>'
+        f'{button}<div class="iris-ba-line"><span>↔</span></div>'
         f'<span class="iris-ba-label" style="left:16px">{before_label}</span>'
         f'<span class="iris-ba-label" style="right:16px">{after_label}</span></div>'
     )
@@ -65,6 +77,17 @@ CSS = """
 .iris-ba-label { position: absolute; bottom: 16px; z-index: 2; pointer-events: none; border-radius: 4px;
   background: rgba(0,0,0,.6); padding: 6px 10px; color: #fff; backdrop-filter: blur(4px);
   font: 10px/1 'IBM Plex Mono', monospace; text-transform: uppercase; letter-spacing: .12em; }
+/* a copy of the image toolbar download button gradio draws on the Generate tab's result
+   (gradio Image .top-panel / .icon-button): same box, same CSS variables, so it follows
+   light/dark exactly like the native button — white with a hairline border in light,
+   black in dark */
+.iris-ba-dl { position: absolute; top: 0; right: 0; z-index: 20; display: flex; align-items: center;
+  justify-content: center; box-sizing: border-box; width: 22px; height: 23px; padding: 1px;
+  border: 0; border-left: 1px solid var(--border-color-primary);
+  border-bottom: 1px solid var(--border-color-primary); border-radius: 0;
+  background: var(--block-background-fill); color: var(--block-label-text-color); cursor: pointer; }
+.iris-ba-dl:hover { background: var(--background-fill-secondary); }
+.iris-ba-dl svg { display: block; width: 14px; height: 14px; }
 .iris-cloud { position: relative; width: 100%; aspect-ratio: 4 / 3; cursor: grab; touch-action: none; overflow: hidden;
   border: 1px solid var(--sl-rule); margin-top: 12px; }
 .iris-cloud:active { cursor: grabbing; }
@@ -87,8 +110,18 @@ function slider(el) {
     const s = Math.max(0, Math.min(100, ((x - r.left) / r.width) * 100));
     before.style.clipPath = `inset(0 ${100 - s}% 0 0)`; line.style.left = `${s}%`; };
   before.style.clipPath = "inset(0 50% 0 0)";
-  el.addEventListener("pointerdown", (e) => { el.setPointerCapture(e.pointerId); set(e.clientX); });
-  el.addEventListener("pointermove", (e) => { if (e.buttons) set(e.clientX); });
+  const overDl = (e) => e.target.closest(".iris-ba-dl") !== null;
+  el.addEventListener("pointerdown", (e) => { if (overDl(e)) return; el.setPointerCapture(e.pointerId); set(e.clientX); });
+  el.addEventListener("pointermove", (e) => { if (e.buttons && !overDl(e)) set(e.clientX); });
+  const dl = el.querySelector(".iris-ba-dl");
+  if (dl) dl.addEventListener("click", async () => {
+    const blob = await (await fetch(el.querySelector(".iris-ba-after").src)).blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = dl.dataset.download;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 5000);
+  });
 }
 
 // camera-space cloud (x right, y down, z forward), flipped to GL axes, wiggling until touched
